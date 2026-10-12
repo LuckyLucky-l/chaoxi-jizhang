@@ -46,6 +46,7 @@ void main() {
       const AndroidAutoCaptureBridge(),
       const AndroidWindowPrivacyBridge(),
       BiometricVaultBridge(),
+      const AndroidBillRecognitionBridge(),
     );
     await controller.initialize();
     await controller.createVault(
@@ -1402,5 +1403,195 @@ void main() {
 
     // 异常提醒也不会把转账当成消费异常
     expect(detectLedgerAnomalies(book, now: now), isEmpty);
+  });
+
+  // ---------------- 页面识别（无障碍） ----------------
+
+  AutoCaptureRecord screenRecord({
+    String id = 'bill',
+    String merchant = '麦当劳',
+    double amount = 38,
+    EntryType type = EntryType.expense,
+    String mergeKey = 'sig',
+  }) => AutoCaptureRecord(
+    id: id,
+    title: merchant,
+    merchant: merchant,
+    rawBody: '付款成功 ¥$amount 商户：$merchant',
+    scenario: 'screenBill',
+    detailSummary: '页面识别 · 支付宝 · $merchant',
+    amount: amount,
+    entryType: type,
+    channel: PaymentChannel.alipay,
+    source: CaptureSource.alipay,
+    capturedAt: DateTime(2026, 10, 12, 12),
+    postedAtMillis: DateTime(2026, 10, 12, 12).millisecondsSinceEpoch,
+    confidence: 0.87,
+    defaultCategoryId: 'daily',
+    profileId: 0,
+    mergeKey: mergeKey,
+    relatedSources: const [],
+  );
+
+  test('页面识别草稿 map（Kotlin toMap 形状）能解析成 AutoCaptureRecord', () {
+    final record = AutoCaptureRecord.fromJson({
+      'id': 'abc',
+      'packageName': 'com.eg.android.AlipayGphone',
+      'source': 'alipay',
+      'sourceLabel': '支付宝',
+      'title': '麦当劳',
+      'merchant': '麦当劳(成都店)',
+      'counterpartyName': '',
+      'rawBody': '付款成功 ¥38.00 商户：麦当劳',
+      'scenario': 'screenBill',
+      'detailSummary': '页面识别 · 支付宝 · 麦当劳(成都店)',
+      'amount': 38.0,
+      'entryType': 'expense',
+      'channel': 'alipay',
+      'capturedAt': '2026-10-12T00:00:00Z',
+      'postedAtMillis': 1700000000000,
+      'confidence': 0.87,
+      'defaultCategoryId': 'daily',
+      'profileId': 0,
+      'mergeKey': 'sig',
+      'relatedSources': <String>[],
+    });
+
+    expect(record.source, CaptureSource.alipay);
+    expect(record.amount, 38.0);
+    expect(record.entryType, EntryType.expense);
+    expect(record.channel, PaymentChannel.alipay);
+    expect(record.mergeKey, 'sig');
+  });
+
+  test('页面识别落账会打上「页面识别」标签并记录推测字段', () {
+    final book = LedgerBook.empty(false);
+    final entry = screenBillToEntry(
+      screenRecord(),
+      book,
+      categoryId: 'food',
+      merchant: '麦当劳(成都店)',
+      product: '板烧鸡腿堡',
+      note: '午餐',
+    );
+
+    expect(entry.categoryId, 'food');
+    expect(entry.tags, contains('页面识别'));
+    expect(entry.autoCaptured, isTrue);
+    expect(entry.inferredFields, contains('categoryId'));
+    expect(entry.inferredFields, contains('merchant'));
+    expect(entry.amount, 38);
+    expect(entry.title, contains('板烧鸡腿堡'));
+  });
+
+  test('页面识别与已有账目重复（同金额同商户、时间接近）时只补全缺失字段', () {
+    final book = LedgerBook.empty(false);
+    final existing = LedgerEntry(
+      id: 'old',
+      title: '付款',
+      merchant: '麦当劳',
+      note: '',
+      amount: 38,
+      type: EntryType.expense,
+      categoryId: 'daily',
+      channel: PaymentChannel.alipay,
+      occurredAt: DateTime(2026, 10, 12, 12, 1),
+      autoCaptured: true,
+      sourceLabel: '支付宝',
+      autoProfileId: 0,
+    );
+    final candidate = screenBillToEntry(
+      screenRecord(id: 'bill-2', merchant: '麦当劳', mergeKey: 'sig-2'),
+      book,
+      categoryId: 'food',
+      merchant: '麦当劳',
+      product: '',
+      note: '午餐',
+    );
+
+    final entries = [existing];
+    final index = findScreenBillDuplicate(entries, candidate);
+    expect(index, 0);
+    final filled = fillMissingFromScreenBill(entries[index], candidate);
+    expect(filled.merchant, '麦当劳');
+    expect(filled.note, '午餐');
+    // 已有分类不清空、也不被页面识别的建议覆盖。
+    expect(filled.categoryId, 'daily');
+  });
+
+  test('同金额同商户但时间差得远，判为两次消费（不并）', () {
+    final book = LedgerBook.empty(false);
+    final older = LedgerEntry(
+      id: 'older',
+      title: '付款',
+      merchant: '麦当劳(成都店)',
+      note: '',
+      amount: 38,
+      type: EntryType.expense,
+      categoryId: 'food',
+      channel: PaymentChannel.alipay,
+      occurredAt: DateTime(2026, 10, 8, 12),
+      autoCaptured: true,
+      sourceLabel: '支付宝',
+      autoProfileId: 0,
+    );
+    final candidate = screenBillToEntry(
+      screenRecord(id: 'bill-x', merchant: '麦当劳(成都店)'), // 交易时间 2026-10-12 12:00
+      book,
+      categoryId: 'food',
+      merchant: '麦当劳(成都店)',
+      product: '',
+      note: '',
+    );
+
+    expect(findScreenBillDuplicate([older], candidate), -1);
+  });
+
+  test('页面识别与无关账目不判为重复', () {
+    final book = LedgerBook.empty(false);
+    final other = LedgerEntry(
+      id: 'other',
+      title: '午餐',
+      merchant: '罗森',
+      note: '',
+      amount: 20,
+      type: EntryType.expense,
+      categoryId: 'daily',
+      channel: PaymentChannel.alipay,
+      occurredAt: DateTime(2026, 10, 12, 12),
+      autoCaptured: true,
+      sourceLabel: '支付宝',
+      autoProfileId: 0,
+    );
+    final candidate = screenBillToEntry(
+      screenRecord(amount: 38),
+      book,
+      categoryId: 'food',
+      merchant: '麦当劳',
+      product: '',
+      note: '',
+    );
+
+    expect(findScreenBillDuplicate([other], candidate), -1);
+  });
+
+  test('页面识别的分类建议优先用商户缓存，否则退回默认分类', () {
+    final book = LedgerBook.empty(false).copyWith(
+      merchantCategories: const {'盒马': 'food'},
+    );
+    expect(
+      suggestScreenBillCategoryId(
+        book,
+        screenRecord(merchant: '盒马'),
+      ),
+      'food',
+    );
+    expect(
+      suggestScreenBillCategoryId(
+        book,
+        screenRecord(merchant: '未识别商户'),
+      ),
+      'daily',
+    );
   });
 }

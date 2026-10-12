@@ -233,6 +233,55 @@ class _AutoCapturePipelineCardState
     return parts.join(' · ');
   }
 
+  String get _screenBillSummary {
+    final state = ref.watch(ledgerControllerProvider);
+    if (!state.accessibilityGranted) {
+      return '通知漏单时，读付款/账单页面的文字，认出一笔让你确认（需开启无障碍服务）';
+    }
+    final pending = state.pendingScreenBills.length;
+    if (pending > 0) {
+      return '有 $pending 条页面识别待确认，回到应用会弹框核对';
+    }
+    return '已开启：打开账单页会自动识别，认出一笔就提示你确认';
+  }
+
+  String get _screenBillActionLabel =>
+      ref.watch(ledgerControllerProvider).accessibilityGranted ? '设置' : '一键开启';
+
+  Future<void> _openAccessibilitySettings() async {
+    final controller = ref.read(ledgerControllerProvider.notifier);
+    if (ref.read(ledgerControllerProvider).accessibilityGranted) {
+      await controller.openAccessibilitySettings();
+      return;
+    }
+    // 系统不允许应用自己打开无障碍开关，这里给出引导再跳转。
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('开启页面识别'),
+        content: const Text(
+          '系统不允许应用自己打开无障碍开关，需要你手动确认：\n\n'
+          '1. 点「去开启」跳到系统无障碍设置\n'
+          '2. 在「已下载的应用」里找到「潮汐账本页面识别」\n'
+          '3. 打开开关，弹出确认框时点「允许 / 确定」',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('去开启'),
+          ),
+        ],
+      ),
+    );
+    if (go == true) {
+      await controller.openAccessibilitySettings();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final pending = _stats.pendingCount;
@@ -318,6 +367,28 @@ class _AutoCapturePipelineCardState
                 label: const Text('查看通知原文'),
               ),
             ],
+          ),
+          const Divider(height: 24),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: const Color(0xFFEDE7F6),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: const Icon(
+                Icons.document_scanner_outlined,
+                color: Color(0xFF5E35B1),
+                size: 22,
+              ),
+            ),
+            title: const Text('页面识别（无障碍）'),
+            subtitle: Text(_screenBillSummary),
+            trailing: TextButton(
+              onPressed: _openAccessibilitySettings,
+              child: Text(_screenBillActionLabel),
+            ),
           ),
         ],
       ),

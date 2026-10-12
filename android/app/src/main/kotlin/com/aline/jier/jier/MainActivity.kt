@@ -19,10 +19,20 @@ class MainActivity : FlutterFragmentActivity() {
         getSharedPreferences(PRIVACY_PREFS, MODE_PRIVATE)
     }
 
+    /** 页面识别通知点进来时带的账单 id，交给 Dart 侧消费一次。 */
+    private var pendingBillId: String? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
         applyScreenCaptureAllowed(loadScreenCaptureAllowed())
+        consumeBillIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        consumeBillIntent(intent)
     }
 
     override fun getRenderMode(): RenderMode {
@@ -43,6 +53,9 @@ class MainActivity : FlutterFragmentActivity() {
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, MODEL_DOWNLOAD_CHANNEL)
             .setMethodCallHandler(::handleModelDownload)
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, BILL_RECOGNITION_CHANNEL)
+            .setMethodCallHandler(::handleBillRecognition)
     }
 
     private fun handleModelDownload(call: MethodCall, result: MethodChannel.Result) {
@@ -81,6 +94,57 @@ class MainActivity : FlutterFragmentActivity() {
             }
         }.onSuccess(result::success).onFailure {
             result.error("model_download_failed", it.message ?: "模型下载操作失败", null)
+        }
+    }
+
+    private fun handleBillRecognition(call: MethodCall, result: MethodChannel.Result) {
+        when (call.method) {
+            "isServiceEnabled" -> result.success(isBillRecognitionEnabled())
+            "openAccessibilitySettings" -> {
+                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                result.success(null)
+            }
+            "fetchPendingBills" ->
+                result.success(ScreenCaptureStore.peek(applicationContext).map { it.toMap() })
+            "confirmBill", "dismissBill" -> {
+                val id = call.argument<String>("id").orEmpty()
+                ScreenCaptureStore.remove(applicationContext, id)
+                BillConfirmNotifier.cancel(applicationContext, id)
+                result.success(null)
+            }
+            // 通知点进来时带的账单 id，只消费一次。
+            "takeLaunchBillId" -> {
+                val id = pendingBillId
+                pendingBillId = null
+                result.success(id)
+            }
+            "screenBillStats" -> {
+                result.success(
+                    mapOf(
+                        "pendingCount" to ScreenCaptureStore.pendingCount(applicationContext),
+                        "droppedTotal" to ScreenCaptureStore.droppedTotal(applicationContext),
+                    ),
+                )
+            }
+            else -> result.notImplemented()
+        }
+    }
+
+    private fun isBillRecognitionEnabled(): Boolean {
+        val enabled = Settings.Secure.getString(
+            contentResolver,
+            "enabled_accessibility_services",
+        ) ?: return false
+        val expected = ComponentName(this, BillRecognitionService::class.java)
+        return enabled.split(':').any { entry ->
+            ComponentName.unflattenFromString(entry.trim()) == expected
+        }
+    }
+
+    private fun consumeBillIntent(intent: Intent?) {
+        val id = intent?.getStringExtra(BillConfirmNotifier.EXTRA_BILL_ID)
+        if (!id.isNullOrBlank()) {
+            pendingBillId = id
         }
     }
 
@@ -201,6 +265,7 @@ class MainActivity : FlutterFragmentActivity() {
         const val AUTO_CAPTURE_CHANNEL = "com.aline.jier/auto_capture"
         const val WINDOW_PRIVACY_CHANNEL = "com.aline.jier/window_privacy"
         const val MODEL_DOWNLOAD_CHANNEL = "com.aline.jier/model_download"
+        const val BILL_RECOGNITION_CHANNEL = "com.aline.jier/bill_recognition"
         const val PRIVACY_PREFS = "jier_window_privacy"
         const val KEY_ALLOW_SCREENSHOTS = "allow_screenshots"
     }

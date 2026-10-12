@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="bill_recognition_description">读取支付/账单页面的文字，认出一笔账让你确认；用于通知漏单时补记，不采集聊天等无关内容。</string>
+    <string name="bill_recognition_summary">页面识别自动记账</string>
+</resources>

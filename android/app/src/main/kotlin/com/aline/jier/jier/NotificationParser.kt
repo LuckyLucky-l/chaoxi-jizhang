@@ -445,7 +445,7 @@ object NotificationParser {
         )
     }
 
-    private fun detectSource(packageName: String): String? = when (packageName) {
+    internal fun detectSource(packageName: String): String? = when (packageName) {
         "com.tencent.mm" -> "wechat"
         "com.eg.android.AlipayGphone" -> "alipay"
         "com.google.android.apps.walletnfcrel",

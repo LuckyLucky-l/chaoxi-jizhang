@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#99000000">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:layout_margin="24dp"
+        android:orientation="vertical"
+        android:padding="20dp"
+        android:background="@drawable/overlay_card_bg">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="页面识别，核对一下"
+            android:textColor="#1B2430"
+            android:textSize="18sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/overlay_source"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:textColor="#5A6A80"
+            android:textSize="13sp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="金额"
+            android:textColor="#5A6A80"
+            android:textSize="13sp" />
+
+        <EditText
+            android:id="@+id/overlay_amount"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@drawable/overlay_field_bg"
+            android:inputType="numberDecimal"
+            android:padding="10dp"
+            android:textColor="#1B2430"
+            android:textSize="15sp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="店铺"
+            android:textColor="#5A6A80"
+            android:textSize="13sp" />
+
+        <EditText
+            android:id="@+id/overlay_merchant"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@drawable/overlay_field_bg"
+            android:hint="可留空"
+            android:inputType="text"
+            android:padding="10dp"
+            android:textColor="#1B2430"
+            android:textSize="15sp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="商品"
+            android:textColor="#5A6A80"
+            android:textSize="13sp" />
+
+        <EditText
+            android:id="@+id/overlay_product"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@drawable/overlay_field_bg"
+            android:hint="可留空"
+            android:inputType="text"
+            android:padding="10dp"
+            android:textColor="#1B2430"
+            android:textSize="15sp" />
+
+        <TextView
+            android:id="@+id/overlay_time"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:textColor="#5A6A80"
+            android:textSize="13sp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:gravity="end"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/overlay_ignore"
+                style="?android:attr/borderlessButtonStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="忽略"
+                android:textColor="#5A6A80" />
+
+            <Button
+                android:id="@+id/overlay_confirm"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:backgroundTint="#4E8DFF"
+                android:text="确认记账"
+                android:textColor="#FFFFFF" />
+        </LinearLayout>
+    </LinearLayout>
+</FrameLayout>

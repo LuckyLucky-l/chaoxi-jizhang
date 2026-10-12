@@ -43,6 +43,7 @@ part 'local_ledger_query.dart';
 part 'local_ledger_search.dart';
 part 'local_ledger_alerts.dart';
 part 'local_ledger_stats.dart';
+part 'local_screen_bill.dart';
 
 const _uuid = Uuid();
 const _ledgerFileName = 'chaoxi_vault.enc';
@@ -317,6 +318,12 @@ final biometricVaultBridgeProvider = Provider<BiometricVaultBridge>((ref) {
   return BiometricVaultBridge();
 });
 
+final billRecognitionBridgeProvider = Provider<AndroidBillRecognitionBridge>((
+  ref,
+) {
+  return const AndroidBillRecognitionBridge();
+});
+
 final ledgerControllerProvider =
     StateNotifierProvider<LedgerController, LedgerViewState>((ref) {
       return LedgerController(
@@ -324,6 +331,7 @@ final ledgerControllerProvider =
         ref.read(autoCaptureBridgeProvider),
         ref.read(windowPrivacyBridgeProvider),
         ref.read(biometricVaultBridgeProvider),
+        ref.read(billRecognitionBridgeProvider),
       );
     });
 
@@ -402,6 +410,7 @@ class _LedgerRootPageState extends ConsumerState<LedgerRootPage>
   Timer? _noticeTimer;
   Timer? _errorTimer;
   int _selectedIndex = 0;
+  bool _billDialogOpen = false;
 
   // 五个页面在 IndexedStack 里都会参与构建。把它们的实例缓存下来，
   // 顶部提示、错误提示这类变化就不会把五个页面全部重建一遍。
@@ -505,13 +514,61 @@ class _LedgerRootPageState extends ConsumerState<LedgerRootPage>
     }
   }
 
+  /// 有待确认的页面识别草稿时，弹框让用户核对；一次弹一条，确认/忽略后接着下一条。
+  Future<void> _maybeShowBillConfirm() async {
+    if (_billDialogOpen || !mounted) return;
+    final state = ref.read(ledgerControllerProvider);
+    if (!state.canShowShell || state.pendingScreenBills.isEmpty) return;
+    final book = state.book;
+    if (book == null) return;
+    final draft = state.pendingScreenBills.first;
+    _billDialogOpen = true;
+    // 让出这一帧再弹框，避免在 build / 监听回调里同步推路由。
+    await Future<void>.delayed(Duration.zero);
+    if (!mounted) {
+      _billDialogOpen = false;
+      return;
+    }
+    try {
+      final result = await showDialog<ScreenBillConfirmResult>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => BillConfirmDialog(
+          book: book,
+          draft: draft.record,
+          product: draft.product,
+        ),
+      );
+      final controller = ref.read(ledgerControllerProvider.notifier);
+      if (result == null) {
+        await controller.dismissScreenBill(draft);
+      } else {
+        await controller.confirmScreenBill(
+          draft,
+          amount: result.amount,
+          merchant: result.merchant,
+          product: result.product,
+          categoryId: result.categoryId,
+          note: result.note,
+        );
+      }
+    } finally {
+      _billDialogOpen = false;
+    }
+    if (mounted) {
+      await _maybeShowBillConfirm();
+    }
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final controller = ref.read(ledgerControllerProvider.notifier);
     if (state == AppLifecycleState.resumed) {
       controller.refreshNotificationPermission();
       controller.refreshBiometricAvailability();
+      controller.refreshAccessibilityPermission();
       controller.syncAutoCapturedEntries(silent: true);
+      unawaited(controller.refreshPendingBills());
     }
     if (state == AppLifecycleState.paused) {
       controller.lockIfQuickLockEnabled();
@@ -526,6 +583,12 @@ class _LedgerRootPageState extends ConsumerState<LedgerRootPage>
         if (_selectedIndex != 0 && mounted) {
           _switchTab(0);
         }
+        unawaited(
+          ref.read(ledgerControllerProvider.notifier).refreshPendingBills(),
+        );
+      }
+      if (next.canShowShell && next.pendingScreenBills.isNotEmpty) {
+        unawaited(_maybeShowBillConfirm());
       }
       _scheduleTransientDismissals(previous, next);
     });
@@ -660,6 +723,7 @@ class LedgerController extends StateNotifier<LedgerViewState> {
     this._autoCaptureBridge,
     this._windowPrivacyBridge,
     this._biometricVaultBridge,
+    this._billRecognitionBridge,
   ) : super(LedgerViewState.initial()) {
     initialize();
   }
@@ -668,6 +732,7 @@ class LedgerController extends StateNotifier<LedgerViewState> {
   final AndroidAutoCaptureBridge _autoCaptureBridge;
   final AndroidWindowPrivacyBridge _windowPrivacyBridge;
   final BiometricVaultBridge _biometricVaultBridge;
+  final AndroidBillRecognitionBridge _billRecognitionBridge;
   String? _sessionPassphrase;
   bool _syncingAutoCapture = false;
 
@@ -852,6 +917,157 @@ class LedgerController extends StateNotifier<LedgerViewState> {
   Future<void> openNotificationAccessSettings() async {
     await _autoCaptureBridge.openNotificationAccessSettings();
     await refreshNotificationPermission();
+  }
+
+  // ---------- 页面识别（无障碍服务） ----------
+
+  Future<void> refreshAccessibilityPermission() async {
+    final granted = await _billRecognitionBridge.isServiceEnabled();
+    if (state.accessibilityGranted != granted) {
+      state = state.copyWith(accessibilityGranted: granted);
+    }
+  }
+
+  Future<void> openAccessibilitySettings() async {
+    await _billRecognitionBridge.openAccessibilitySettings();
+    await refreshAccessibilityPermission();
+  }
+
+  /// 拉取页面识别的待确认草稿；悬浮框里已确认的直接落账，其余排队等应用内核对。
+  Future<void> refreshPendingBills() async {
+    final book = state.book;
+    if (state.locked || book == null) return;
+    final access = await _billRecognitionBridge.isServiceEnabled();
+    if (state.accessibilityGranted != access) {
+      state = state.copyWith(accessibilityGranted: access);
+    }
+    final bills = access
+        ? await _billRecognitionBridge.fetchPendingBills()
+        : <ScreenBillCapture>[];
+    if (bills.isEmpty) {
+      if (state.pendingScreenBills.isNotEmpty) {
+        state = state.copyWith(pendingScreenBills: const []);
+      }
+      return;
+    }
+    // 悬浮框里已点「确认记账」的：直接落账，不再二次弹框。
+    final remaining = <ScreenBillCapture>[];
+    for (final bill in bills) {
+      if (bill.userConfirmed) {
+        await _commitScreenBill(
+          bill,
+          amount: bill.record.amount,
+          merchant: bill.record.merchant,
+          product: bill.product,
+          categoryId: suggestScreenBillCategoryId(book, bill.record),
+          note: '',
+        );
+      } else {
+        remaining.add(bill);
+      }
+    }
+    final launchId = await _billRecognitionBridge.takeLaunchBillId();
+    if (launchId != null && launchId.isNotEmpty) {
+      final index = remaining.indexWhere((bill) => bill.record.id == launchId);
+      if (index > 0) remaining.insert(0, remaining.removeAt(index));
+    }
+    state = state.copyWith(pendingScreenBills: remaining);
+  }
+
+  Future<void> dismissScreenBill(ScreenBillCapture bill) async {
+    await _billRecognitionBridge.dismissBill(bill.record.id);
+    state = state.copyWith(
+      pendingScreenBills: state.pendingScreenBills
+          .where((item) => item.record.id != bill.record.id)
+          .toList(),
+      noticeMessage: '已忽略这条页面识别结果。',
+    );
+  }
+
+  /// 应用内核对后落账（悬浮框没确认的那部分）。
+  Future<void> confirmScreenBill(
+    ScreenBillCapture bill, {
+    required double amount,
+    required String merchant,
+    required String product,
+    required String categoryId,
+    required String note,
+  }) async {
+    final saved = await _commitScreenBill(
+      bill,
+      amount: amount,
+      merchant: merchant,
+      product: product,
+      categoryId: categoryId,
+      note: note,
+    );
+    if (!saved) return;
+    state = state.copyWith(
+      pendingScreenBills: state.pendingScreenBills
+          .where((item) => item.record.id != bill.record.id)
+          .toList(),
+    );
+  }
+
+  /// 实际写入：先查重——命中已有账目只补全缺失的推测字段，未命中则新增一笔。
+  /// 写成功才把草稿从待确认箱撤掉；返回是否成功。
+  Future<bool> _commitScreenBill(
+    ScreenBillCapture bill, {
+    required double amount,
+    required String merchant,
+    required String product,
+    required String categoryId,
+    required String note,
+  }) async {
+    final book = state.book;
+    final passphrase = _sessionPassphrase;
+    if (book == null || passphrase == null) return false;
+
+    var candidate = screenBillToEntry(
+      bill.record.copyWith(amount: amount, merchant: merchant),
+      book,
+      categoryId: categoryId,
+      merchant: merchant,
+      product: product,
+      note: note,
+    );
+    final entries = [...book.entries];
+    final duplicateIndex = findScreenBillDuplicate(entries, candidate);
+    // 同商户同金额的页面换个时间再记时，页面签名（也就是 id）会重复：
+    // 不是重复账目的话就换个唯一 id，避免账本里出现两条同 id 的流水。
+    if (duplicateIndex == -1 &&
+        entries.any((entry) => entry.id == candidate.id)) {
+      candidate = candidate.copyWith(
+        id: '${candidate.id}-${candidate.autoPostedAtMillis}',
+      );
+    }
+    final bool mergedIntoExisting;
+    if (duplicateIndex != -1) {
+      entries[duplicateIndex] = fillMissingFromScreenBill(
+        entries[duplicateIndex],
+        candidate,
+      );
+      mergedIntoExisting = true;
+    } else {
+      entries.add(candidate);
+      mergedIntoExisting = false;
+    }
+    entries.sort((a, b) => b.occurredAt.compareTo(a.occurredAt));
+    final updatedBook = book.copyWith(
+      entries: entries,
+      updatedAt: DateTime.now(),
+    );
+    await _persistBook(
+      updatedBook,
+      passphrase,
+      notice: mergedIntoExisting
+          ? '已把这条页面识别补进已有账目。'
+          : '页面识别已记账：${categoryForId(candidate.categoryId).name}。',
+    );
+    // 保存失败时不要把草稿丢掉，留着下次还能再确认。
+    if (!identical(state.book, updatedBook)) return false;
+    await _billRecognitionBridge.confirmBill(bill.record.id);
+    return true;
   }
 
   Future<void> revealAmounts(bool reveal) async {
@@ -2480,6 +2696,65 @@ class AndroidAutoCaptureBridge {
   }
 }
 
+/// 页面识别（无障碍服务）桥：读待确认草稿、确认/忽略，以及服务开关状态。
+class AndroidBillRecognitionBridge {
+  const AndroidBillRecognitionBridge();
+
+  static const _channel = MethodChannel('com.aline.jier/bill_recognition');
+
+  Future<bool> isServiceEnabled() async {
+    if (!Platform.isAndroid) return false;
+    try {
+      return (await _channel.invokeMethod<bool>('isServiceEnabled')) ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> openAccessibilitySettings() async {
+    if (!Platform.isAndroid) return;
+    try {
+      await _channel.invokeMethod<void>('openAccessibilitySettings');
+    } catch (_) {}
+  }
+
+  Future<List<ScreenBillCapture>> fetchPendingBills() async {
+    if (!Platform.isAndroid) return const [];
+    try {
+      final raw =
+          await _channel.invokeMethod<List<dynamic>>('fetchPendingBills') ??
+          const [];
+      return raw
+          .whereType<Map>()
+          .map((map) => ScreenBillCapture.fromMap(Map<String, dynamic>.from(map)))
+          .toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  Future<void> confirmBill(String id) => _removeBill('confirmBill', id);
+
+  Future<void> dismissBill(String id) => _removeBill('dismissBill', id);
+
+  Future<void> _removeBill(String method, String id) async {
+    if (!Platform.isAndroid || id.isEmpty) return;
+    try {
+      await _channel.invokeMethod<void>(method, {'id': id});
+    } catch (_) {}
+  }
+
+  /// 通知点进来时带的账单 id，只取一次。
+  Future<String?> takeLaunchBillId() async {
+    if (!Platform.isAndroid) return null;
+    try {
+      return await _channel.invokeMethod<String>('takeLaunchBillId');
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
 class AndroidWindowPrivacyBridge {
   const AndroidWindowPrivacyBridge();
 
@@ -2581,6 +2856,8 @@ class LedgerViewState {
     this.errorMessage,
     this.noticeMessage,
     this.lastAutoSyncAt,
+    this.pendingScreenBills = const [],
+    this.accessibilityGranted = false,
   });
 
   factory LedgerViewState.initial() => const LedgerViewState(
@@ -2607,6 +2884,12 @@ class LedgerViewState {
   final String? noticeMessage;
   final DateTime? lastAutoSyncAt;
 
+  /// 页面识别出来、还没确认的账单草稿（队列头是下一次要弹框的）。
+  final List<ScreenBillCapture> pendingScreenBills;
+
+  /// 页面识别（无障碍服务）是否已开启。
+  final bool accessibilityGranted;
+
   bool get canShowShell =>
       !initializing && !onboardingRequired && !locked && book != null;
 
@@ -2623,6 +2906,8 @@ class LedgerViewState {
     Object? errorMessage = _unset,
     Object? noticeMessage = _unset,
     DateTime? lastAutoSyncAt,
+    List<ScreenBillCapture>? pendingScreenBills,
+    bool? accessibilityGranted,
   }) {
     return LedgerViewState(
       initializing: initializing ?? this.initializing,
@@ -2642,6 +2927,8 @@ class LedgerViewState {
           ? this.noticeMessage
           : noticeMessage as String?,
       lastAutoSyncAt: lastAutoSyncAt ?? this.lastAutoSyncAt,
+      pendingScreenBills: pendingScreenBills ?? this.pendingScreenBills,
+      accessibilityGranted: accessibilityGranted ?? this.accessibilityGranted,
     );
   }
 }
@@ -4369,6 +4656,36 @@ class AutoCaptureRecord {
             .where((item) => item != CaptureSource.unknown)
             .toList(),
       );
+
+  /// 页面识别确认框里用户改过的字段（标题/商户/金额）回填到记录上。
+  AutoCaptureRecord copyWith({
+    String? title,
+    String? merchant,
+    String? counterpartyName,
+    double? amount,
+    EntryType? entryType,
+    String? defaultCategoryId,
+    double? confidence,
+  }) => AutoCaptureRecord(
+    id: id,
+    title: title ?? this.title,
+    merchant: merchant ?? this.merchant,
+    counterpartyName: counterpartyName ?? this.counterpartyName,
+    rawBody: rawBody,
+    scenario: scenario,
+    detailSummary: detailSummary,
+    amount: amount ?? this.amount,
+    entryType: entryType ?? this.entryType,
+    channel: channel,
+    source: source,
+    capturedAt: capturedAt,
+    postedAtMillis: postedAtMillis,
+    confidence: confidence ?? this.confidence,
+    defaultCategoryId: defaultCategoryId ?? this.defaultCategoryId,
+    profileId: profileId,
+    mergeKey: mergeKey,
+    relatedSources: relatedSources,
+  );
 }
 
 double round2(num value) => (value * 100).roundToDouble() / 100;
