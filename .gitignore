@@ -34,6 +34,9 @@ migrate_working_dir/
 /coverage/
 logcat_full.txt
 
+# 构建产物 / 安装包（发布走 GitHub Release，不入库）
+/dist/*.apk
+
 # Symbolication related
 app.*.symbols
 
