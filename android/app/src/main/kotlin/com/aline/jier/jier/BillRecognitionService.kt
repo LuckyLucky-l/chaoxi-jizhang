@@ -30,7 +30,6 @@ class BillRecognitionService : AccessibilityService() {
     private var lastSignatureAt: Long = 0L
 
     private var overlayView: View? = null
-    private var overlayDraft: ScreenBillDraft? = null
 
     private val timeFormat = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
 
@@ -137,7 +136,9 @@ class BillRecognitionService : AccessibilityService() {
         }
         if (added) {
             overlayView = view
-            overlayDraft = draft
+        } else {
+            // 有些 ROM 不允许无障碍悬浮层：退回到通知，点开进应用再核对。
+            BillConfirmNotifier.notify(applicationContext, draft)
         }
     }
 
@@ -152,7 +153,7 @@ class BillRecognitionService : AccessibilityService() {
 
         val confirmed = draft.confirmed(
             amount = amount,
-            merchant = merchant.ifBlank { draft.merchant },
+            merchant = merchant,
             product = product,
         )
         ScreenCaptureStore.enqueue(applicationContext, confirmed)
@@ -170,7 +171,6 @@ class BillRecognitionService : AccessibilityService() {
     private fun dismissOverlay() {
         val view = overlayView ?: return
         overlayView = null
-        overlayDraft = null
         runCatching {
             (getSystemService(WINDOW_SERVICE) as? WindowManager)?.removeView(view)
         }
